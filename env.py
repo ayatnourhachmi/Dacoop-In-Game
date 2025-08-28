@@ -8,7 +8,8 @@ class ContinuousWorldParallelEnv(ParallelEnv):
     metadata = {"render_modes": ["human"], "name": "continuous_world_parallel_env_v1"}
 
     def __init__(self, n_agents=2, max_cycles=1000, world_size=(10, 10),
-                 render_mode="human", dc=0.5, ds=2.0, evader_speed=300):
+                 render_mode="human", dc=0.5, ds=2.0, evader_speed=400, scale=100,
+                 pursuer_speed=300):
         super().__init__()
         self.n_agents = n_agents
         self.agents = [f"agent_{i}" for i in range(n_agents)]
@@ -17,10 +18,12 @@ class ContinuousWorldParallelEnv(ParallelEnv):
         self.steps = 0
         self.world_width, self.world_height = world_size
         self.render_mode = render_mode
-        self.dt = 0.1  # Match the original environment's timestep
+        self.dt = 0.05  # Smaller timestep for smoother motion
         self.dc = dc
         self.ds = ds
         self.evader_speed = evader_speed  # mm/s like original
+        self.pursuer_speed = pursuer_speed  # mm/s, ensure evader_speed > pursuer_speed
+        self.scale = scale
 
         # Scale world coordinates to match original environment (mm)
         self.world_width_mm = self.world_width * 1000
@@ -28,25 +31,34 @@ class ContinuousWorldParallelEnv(ParallelEnv):
 
         # Obstacle specifications (scaled to match world)
         self.obstacle_specs = [
-            (2.0, 2.0, 1.0, 0.5, None),
-            (5.0, 4.0, 0.7, 0.7, None),
-            (7.5, 8.0, 1.2, 0.4, None)
+            (2.0, 2.0, 1.0, 0.5, "sprites/obs1.png"),
+            (5.0, 4.0, 0.7, 0.7, "sprites/obs1.png"),
+            (7.5, 8.0, 1.2, 0.4, "sprites/obs1.png")
         ]
-        self.obstacles_objects = [Obstacle(x, y, w, h, 50, image=img)
+        self.obstacles_objects = [Obstacle(x, y, w, h, self.scale, image=img)
                                   for x, y, w, h, img in self.obstacle_specs]
 
         # Agents with APF parameters
+        # Convert mm/s to m/s for pursuers constant speed
+        pursuer_speed_ms = max(0.01, self.pursuer_speed) / 1000.0
         self.agents_objects = [
             Agent(pos=[1.0 + i * 0.5, 1.0 + i * 0.3],
-                  radius=0.3, dc=dc, ds=ds, bounds=world_size)
+                  radius=0.3, dc=dc, ds=ds, bounds=world_size,
+                  constant_speed=pursuer_speed_ms)
             for i in range(n_agents)
         ]
 
         # Evader with movement capability
-        self.evader = Evader(pos=[6.0, 6.0], scale=50, radius=0.4, de=0.4,
-                            image="sprites/golden.png")
-        self.evader_speed = evader_speed / 1000  # Convert to m/s
+        self.evader = Evader(pos=[6.0, 6.0], scale=self.scale, radius=0.4, de=0.4,
+                            image="sprites/evader.png")
+        # Evader speed in m/s
+        self.evader_speed = max((self.pursuer_speed + 1), evader_speed) / 1000.0
         self.evader_direction = np.array([0.0, 1.0])  # Initial direction
+        # Maintain a minimum clearance from walls (in meters)
+        self.evader_clearance = max(self.evader.de * 2.0, 0.6)
+        # Manual control for evader and corner var init
+        self.evader_manual = True
+        self._corner_mode_steps = 0
         
         # Evader behavior state
         self.evader_wall_following = False
@@ -56,15 +68,18 @@ class ContinuousWorldParallelEnv(ParallelEnv):
         self.zigzag_last = np.zeros(2)
         self.last_e = np.zeros(2)
 
+        # Manual control mode for evader
+        self.evader_manual = True
+
         if render_mode == "human":
             self.renderer = Renderer(
                 width_m=self.world_width,
                 height_m=self.world_height,
-                scale=50,
-                agent_radius=0.3,
+                scale=self.scale,
+                agent_radius=0.2,
                 obstacles=self.obstacles_objects,
                 agent_image="sprites/airplane.png",
-                background_image="sprites/background.jpg"
+                background_image="sprites/bluesky.png"
             )
         else:
             self.renderer = None
@@ -190,8 +205,8 @@ class ContinuousWorldParallelEnv(ParallelEnv):
         evader_placed = False
         attempts = 0
         while not evader_placed and attempts < 100:
-            x = random.uniform(self.evader.de, self.world_width - self.evader.de)
-            y = random.uniform(self.world_height * 0.7, self.world_height - self.evader.de)  # Upper part like original
+            x = random.uniform(self.evader_clearance, self.world_width - self.evader_clearance)
+            y = random.uniform(max(self.evader_clearance, self.world_height * 0.7), self.world_height - self.evader_clearance)  # keep clearance from walls
             collision = any(obs.collides_with_point((x, y), self.evader.de)
                             for obs in self.obstacles_objects)
             if not collision:
@@ -255,61 +270,185 @@ class ContinuousWorldParallelEnv(ParallelEnv):
         
         return np.array(obs, dtype=np.float32)
 
-    def update_evader(self):
-        """Update evader position using escape strategy similar to original"""
-        # Simple escaping strategy - move away from nearest agent
-        nearest_agent_dist = float('inf')
-        nearest_agent_pos = None
-        
-        for agent in self.agents_objects:
-            if not agent.reached_evader:
-                dist = np.linalg.norm(agent.pos - self.evader.pos)
-                if dist < nearest_agent_dist:
-                    nearest_agent_dist = dist
-                    nearest_agent_pos = agent.pos
-        
-        if nearest_agent_pos is not None:
-            # Move away from nearest agent
-            escape_direction = self.evader.pos - nearest_agent_pos
-            if np.linalg.norm(escape_direction) > 1e-6:
-                escape_direction = escape_direction / np.linalg.norm(escape_direction)
-            else:
-                escape_direction = np.array([1.0, 0.0])
-            
-            # Add some randomness
-            angle_noise = np.random.uniform(-np.pi/6, np.pi/6)  # ±30 degrees
-            cos_noise = np.cos(angle_noise)
-            sin_noise = np.sin(angle_noise)
-            rotation_matrix = np.array([[cos_noise, -sin_noise], 
-                                        [sin_noise, cos_noise]])
-            escape_direction = rotation_matrix @ escape_direction
-            
-            self.evader_direction = escape_direction
-        
-        # Check for collisions and walls
-        new_pos = self.evader.pos + self.evader_direction * self.evader_speed * self.dt
-        
-        # Boundary checking
-        if (new_pos[0] < self.evader.de or new_pos[0] > self.world_width - self.evader.de or
-            new_pos[1] < self.evader.de or new_pos[1] > self.world_height - self.evader.de):
-            # Reflect off walls
-            if new_pos[0] < self.evader.de or new_pos[0] > self.world_width - self.evader.de:
-                self.evader_direction[0] = -self.evader_direction[0]
-            if new_pos[1] < self.evader.de or new_pos[1] > self.world_height - self.evader.de:
-                self.evader_direction[1] = -self.evader_direction[1]
-            new_pos = self.evader.pos + self.evader_direction * self.evader_speed * self.dt
-        
-        # Check obstacle collisions
-        collision_with_obstacle = any(
-            obs.collides_with_point(new_pos, self.evader.de)
-            for obs in self.obstacles_objects
-        )
-        
-        if collision_with_obstacle:
-            # Don't move if collision detected
-            pass
+    def _compute_evader_force(self):
+        """Compute desired evader unit direction using zigzag/escape logic (no repulsive forces)."""
+        # Corner detection
+        near_left = self.evader.pos[0] <= self.evader_clearance + 1e-6
+        near_right = self.evader.pos[0] >= self.world_width - self.evader_clearance - 1e-6
+        near_top = self.evader.pos[1] <= self.evader_clearance + 1e-6
+        near_bottom = self.evader.pos[1] >= self.world_height - self.evader_clearance - 1e-6
+        near_two_walls = (near_left or near_right) and (near_top or near_bottom)
+
+        if near_two_walls or self._corner_mode_steps > 0:
+            # Compute wall normal and tangential direction; persist for a few frames
+            wall_normal = np.array([0.0, 0.0])
+            if near_left:
+                wall_normal += np.array([1.0, 0.0])
+            if near_right:
+                wall_normal += np.array([-1.0, 0.0])
+            if near_top:
+                wall_normal += np.array([0.0, 1.0])
+            if near_bottom:
+                wall_normal += np.array([0.0, -1.0])
+            if np.linalg.norm(wall_normal) < 1e-6:
+                wall_normal = -self.evader_direction
+            wall_normal = wall_normal / (np.linalg.norm(wall_normal) + 1e-9)
+            t1 = np.array([-wall_normal[1], wall_normal[0]])
+            t2 = -t1
+            # Prefer tangent aligned with current direction to avoid jitter
+            cand = t1 if np.dot(t1, self.evader_direction) >= np.dot(t2, self.evader_direction) else t2
+            # Persist choice
+            self._corner_tangent = cand
+            self._corner_mode_steps = max(self._corner_mode_steps, 12)
+            self.evader_wall_following = True
+            return cand / (np.linalg.norm(cand) + 1e-9)
+        # Distances to agents
+        agent_positions = [a.pos for a in self.agents_objects if not a.reached_evader]
+        if len(agent_positions) == 0:
+            mean_escape = np.zeros(2)
+            nearest_agent_dist = float('inf')
         else:
-            self.evader.pos[:] = new_pos
+            diffs = [self.evader.pos - ap for ap in agent_positions]
+            dists = [np.linalg.norm(d) for d in diffs]
+            nearest_agent_dist = min(dists)
+            # Weighted average of away vectors (inverse-square like)
+            contribs = []
+            for d, r in zip(diffs, dists):
+                if r > 1e-6:
+                    contribs.append(d / (r * r))
+            mean_escape = np.mean(contribs, axis=0) if contribs else np.zeros(2)
+
+        # Panic level
+        if nearest_agent_dist == float('inf') or nearest_agent_dist > self.evader_sensitivity_range:
+            p_panic = 0.0
+        else:
+            x = -nearest_agent_dist / self.evader_sensitivity_range + 1.0
+            p_panic = (np.exp(x) - 1.0) / (np.e - 1.0)
+
+        # Zigzag if not panicked and no close obstacle
+        # Compute min distance to obstacles (via closest point on rectangle)
+        def dist_to_obstacle(obs):
+            left = obs.x - obs.width_m / 2
+            right = obs.x + obs.width_m / 2
+            top = obs.y - obs.height_m / 2
+            bottom = obs.y + obs.height_m / 2
+            cx = np.clip(self.evader.pos[0], left, right)
+            cy = np.clip(self.evader.pos[1], top, bottom)
+            return np.linalg.norm(self.evader.pos - np.array([cx, cy]))
+
+        min_obs_dist = min([dist_to_obstacle(o) for o in self.obstacles_objects], default=float('inf'))
+
+        if p_panic < self.evader_zigzag_threshold and min_obs_dist > 0.3:
+            self.evader_zigzag_flag = True
+            if self.zigzag_count == 0:
+                # pick a random direction roughly forward
+                while True:
+                    ang = np.random.uniform(-np.pi, np.pi)
+                    cand = np.array([np.cos(ang), np.sin(ang)])
+                    if np.dot(cand, self.evader_direction) > 0:
+                        self.zigzag_last = cand
+                        break
+                self.zigzag_count = 1
+                F_escape = self.zigzag_last
+            else:
+                F_escape = self.zigzag_last
+                self.zigzag_count += 1
+                if self.zigzag_count > np.random.randint(self.evader_zigzag_min, self.evader_zigzag_max + 1):
+                    self.zigzag_count = 0
+        else:
+            self.evader_zigzag_flag = False
+            self.zigzag_count = 0
+            # Use averaged away vector
+            if np.linalg.norm(mean_escape) > 1e-6:
+                F_escape = mean_escape / np.linalg.norm(mean_escape)
+            else:
+                F_escape = self.evader_direction.copy()
+
+        # Predictive check: if stepping along escape would collide with walls/obstacles, follow wall/obstacle tangent
+        step_preview = self.evader_speed * self.dt
+        cand_pos = self.evader.pos + F_escape * step_preview
+
+        def would_hit_walls(p):
+            return (
+                p[0] < self.evader_clearance or p[0] > self.world_width - self.evader_clearance or
+                p[1] < self.evader_clearance or p[1] > self.world_height - self.evader_clearance
+            )
+
+        def would_hit_obstacles(p):
+            return any(obs.collides_with_point(p, self.evader.de) for obs in self.obstacles_objects)
+
+        self.evader_wall_following = False
+        if would_hit_walls(cand_pos) or would_hit_obstacles(cand_pos):
+            # Choose tangential direction around nearest constraint
+            # Prefer nearest obstacle if any
+            nearest_o = None
+            if len(self.obstacles_objects) > 0:
+                dists = [(dist_to_obstacle(o), o) for o in self.obstacles_objects]
+                dists.sort(key=lambda x: x[0])
+                nearest_o = dists[0][1]
+            if nearest_o is not None and dist_to_obstacle(nearest_o) < float('inf'):
+                left = nearest_o.x - nearest_o.width_m / 2
+                right = nearest_o.x + nearest_o.width_m / 2
+                topy = nearest_o.y - nearest_o.height_m / 2
+                bottom = nearest_o.y + nearest_o.height_m / 2
+                cx = np.clip(self.evader.pos[0], left, right)
+                cy = np.clip(self.evader.pos[1], topy, bottom)
+                closest = np.array([cx, cy])
+                normal = self.evader.pos - closest
+            else:
+                # Use wall normal
+                normal = np.array([0.0, 0.0])
+                if self.evader.pos[0] < self.evader_clearance:
+                    normal += np.array([1.0, 0.0])
+                if self.evader.pos[0] > self.world_width - self.evader_clearance:
+                    normal += np.array([-1.0, 0.0])
+                if self.evader.pos[1] < self.evader_clearance:
+                    normal += np.array([0.0, 1.0])
+                if self.evader.pos[1] > self.world_height - self.evader_clearance:
+                    normal += np.array([0.0, -1.0])
+                if np.linalg.norm(normal) < 1e-6:
+                    normal = -F_escape
+            if np.linalg.norm(normal) > 1e-6:
+                normal = normal / np.linalg.norm(normal)
+                tangential = np.array([-normal[1], normal[0]])
+                if np.dot(tangential, self.evader_direction) < 0:
+                    tangential = -tangential
+                F_total = tangential
+                self.evader_wall_following = True
+            else:
+                F_total = F_escape
+        else:
+            F_total = F_escape
+
+        # Normalize
+        if np.linalg.norm(F_total) > 1e-6:
+            F_total = F_total / np.linalg.norm(F_total)
+        else:
+            F_total = self.evader_direction.copy()
+        return F_total
+
+    def update_evader(self):
+        """Update evader position via manual keyboard control (arrow keys/WASD)."""
+        try:
+            import pygame
+            keys = pygame.key_get_pressed() if hasattr(pygame, 'key_get_pressed') else pygame.key.get_pressed()
+            dx = (1 if keys[pygame.K_RIGHT] or keys[pygame.K_d] else 0) - (1 if keys[pygame.K_LEFT] or keys[pygame.K_a] else 0)
+            dy = (1 if keys[pygame.K_DOWN] or keys[pygame.K_s] else 0) - (1 if keys[pygame.K_UP] or keys[pygame.K_w] else 0)
+        except Exception:
+            dx, dy = 0, 0
+
+        move = np.array([dx, dy], dtype=float)
+        if np.linalg.norm(move) > 1e-6:
+            move_dir = move / np.linalg.norm(move)
+            self.evader_direction = move_dir
+            step = self.evader_speed * self.dt
+            candidate = self.evader.pos + move_dir * step
+            # Keep wall clearance
+            candidate[0] = np.clip(candidate[0], self.evader_clearance, self.world_width - self.evader_clearance)
+            candidate[1] = np.clip(candidate[1], self.evader_clearance, self.world_height - self.evader_clearance)
+            # Skip move if collides with obstacles
+            if not any(obs.collides_with_point(candidate, self.evader.de) for obs in self.obstacles_objects):
+                self.evader.pos[:] = candidate
 
     def step(self, actions):
         self.steps += 1
@@ -333,8 +472,11 @@ class ContinuousWorldParallelEnv(ParallelEnv):
                     evader_de=self.evader.de,
                     action=action,  # Pass the APF parameters
                     eta=1.0,
-                    rho_0=2.0,
-                    lam=1.0
+                    rho_0=3.0,
+                    lam=1.0,
+                    repulse_gain=2.0,
+                    wall_rho0=2.0,
+                    wall_repulse_gain=2.0
                 )
 
         # Evader update is deferred until after capture checks
@@ -425,6 +567,10 @@ class ContinuousWorldParallelEnv(ParallelEnv):
         # Update evader position only if no agent has captured it
         if not any(agent.reached_evader for agent in self.agents_objects):
             self.update_evader()
+            # Provide current direction to renderer for sprite rotation
+            if hasattr(self, 'renderer') and self.renderer:
+                # store direction on evader so renderer can rotate sprite
+                self.evader.direction = self.evader_direction.copy()
 
         # Print detailed information periodically
         if self.steps % 30 == 0 or any(agent.reached_evader for agent in self.agents_objects):
@@ -437,7 +583,7 @@ class ContinuousWorldParallelEnv(ParallelEnv):
         if self.renderer:
             agent_positions = [agent.pos for agent in self.agents_objects]
             self.renderer.draw(agent_positions, self.evader, agents=self.agents_objects)
-            self.renderer.tick(30)
+            self.renderer.tick(60)
 
     def close(self):
         if self.renderer:
@@ -446,7 +592,7 @@ class ContinuousWorldParallelEnv(ParallelEnv):
 if __name__ == "__main__":
     # Test with APF actions
     print("=== APF-Based Navigation Test ===")
-    env = ContinuousWorldParallelEnv(n_agents=3, render_mode="human")
+    env = ContinuousWorldParallelEnv(n_agents=2, render_mode="human")
     num_episodes = 2
 
     for episode in range(num_episodes):

@@ -1,13 +1,14 @@
 import numpy as np
 
 class Agent:
-    def __init__(self, pos, radius=0.3, min_speed=0.4, max_speed=4.0, dc=1.5, ds=3.0, bounds=None):
+    def __init__(self, pos, radius=0.3, min_speed=0.2, max_speed=2.5, dc=1.5, ds=3.0, bounds=None, constant_speed=None):
         self.pos = np.array(pos, dtype=np.float32)
         self.radius = radius  # physical size
         self.dc = dc          # capture distance
         self.ds = ds          # sensing distance
         self.min_speed = min_speed
         self.max_speed = max_speed
+        self.constant_speed = constant_speed  # if set (m/s), agent moves at fixed speed
         self.hit_wall = False
         self.reached_evader = False
         self.last_velocity = np.array([0.0, 0.0], dtype=np.float32)
@@ -96,7 +97,9 @@ class Agent:
         
         return None
 
-    def update(self, dt, bounds, obstacles, evader_pos, evader_de, agents, action=None, eta=1.0, rho_0=2.0, lam=1.0):
+    def update(self, dt, bounds, obstacles, evader_pos, evader_de, agents,
+               action=None, eta=1.0, rho_0=2.0, lam=1.0, repulse_gain=1.0,
+               wall_rho0=2.0, wall_repulse_gain=1.0):
         """
         Update agent position using APF with action-based parameters
         """
@@ -114,7 +117,7 @@ class Agent:
         if action is not None:
             # Action is 2D: [scale_repulse_factor, balance_factor]
             # Map action[0] to eta (repulsive force scale)
-            eta = np.clip(action[0], 0.1, 10.0) * 1e6
+            eta = np.clip(action[0], 0.1, 10.0) * 5e5  # reduce force scale for smoothness
             # Map action[1] to individual balance (attractive vs repulsive balance)
             individual_balance = np.clip(action[1], 0.0, 4000.0)
         else:
@@ -125,13 +128,35 @@ class Agent:
         
         # Create obstacle list including walls and other agents
         all_obstacles = obstacles + self.wall_obstacles + [agent for agent in agents if agent is not self]
-        F_repulsive = self.repulsive_force(all_obstacles, eta, rho_0)
+        F_repulsive = self.repulsive_force(all_obstacles, eta, rho_0) * repulse_gain
+
+        # Explicit wall repulsion (inward push near boundaries)
+        F_wall = np.zeros(2, dtype=np.float32)
+        if bounds is not None:
+            env_width, env_height = bounds
+            x, y = float(self.pos[0]), float(self.pos[1])
+            # Left wall
+            dl = max(0.0, x - 0.0)
+            if dl <= wall_rho0:
+                F_wall += wall_repulse_gain * (wall_rho0 - dl) / max(dl, 1e-6) * np.array([1.0, 0.0])
+            # Right wall
+            dr = max(0.0, env_width - x)
+            if dr <= wall_rho0:
+                F_wall += wall_repulse_gain * (wall_rho0 - dr) / max(dr, 1e-6) * np.array([-1.0, 0.0])
+            # Top wall
+            dtw = max(0.0, y - 0.0)
+            if dtw <= wall_rho0:
+                F_wall += wall_repulse_gain * (wall_rho0 - dtw) / max(dtw, 1e-6) * np.array([0.0, 1.0])
+            # Bottom wall
+            db = max(0.0, env_height - y)
+            if db <= wall_rho0:
+                F_wall += wall_repulse_gain * (wall_rho0 - db) / max(db, 1e-6) * np.array([0.0, -1.0])
         
         # Inter-individual force (social coordination)
         F_social = self.inter_individual_force(agents, lam)
         
         # Combine forces with individual balance
-        total_force = F_attractive + F_repulsive + F_social
+        total_force = F_attractive + F_repulsive + F_social + F_wall
         
         # Check for local minimum (APF wall-following logic)
         self.wall_following = False
@@ -141,10 +166,10 @@ class Agent:
                 self.wall_following = True
                 total_force = self.wall_following_force(F_attractive, F_repulsive, F_social)
 
-        # Apply angular constraint (max 30 degrees turn per step)
+        # Apply angular constraint (max 15 degrees turn per step)
         if np.linalg.norm(total_force) > 1e-6:
             desired_direction = total_force / np.linalg.norm(total_force)
-            max_turn_angle = np.radians(30)
+            max_turn_angle = np.radians(15)
             
             current_angle = np.arctan2(self.orientation[1], self.orientation[0])
             desired_angle = np.arctan2(desired_direction[1], desired_direction[0])
@@ -163,9 +188,14 @@ class Agent:
             # Update orientation
             self.orientation = np.array([np.cos(actual_angle), np.sin(actual_angle)])
             
-            # Calculate velocity
-            speed = np.clip(np.linalg.norm(total_force), self.min_speed, self.max_speed)
-            velocity = self.orientation * speed
+            # Calculate velocity with simple smoothing (inertia)
+            if self.constant_speed is not None:
+                target_speed = float(self.constant_speed)
+            else:
+                target_speed = np.clip(np.linalg.norm(total_force), self.min_speed, self.max_speed)
+            target_velocity = self.orientation * target_speed
+            alpha = 0.3  # smoothing factor
+            velocity = (1 - alpha) * self.last_velocity + alpha * target_velocity
         else:
             velocity = np.zeros(2, dtype=np.float32)
 
@@ -241,15 +271,7 @@ class Agent:
         if dist < 1e-6:
             return np.zeros(2, dtype=np.float32)
 
-        # Distance-based scaling
-        if dist > 5.0:
-            scale = 2.0
-        elif dist > 2.0:
-            scale = 1.5
-        else:
-            scale = 0.5
-            
-        return scale * (diff / dist)
+        return (diff / dist)
 
     def repulsive_force(self, obstacles, eta=1.0, rho_0=2.0):
         """Repulsive force from obstacles"""

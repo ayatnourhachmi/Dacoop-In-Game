@@ -99,8 +99,19 @@ class Evader:
         pygame.draw.circle(screen, (255, 255, 0), (px, py), int(self.radius * scale), 1)
         
         if self.image:
-            rect = self.image.get_rect(center=(px, py))
-            screen.blit(self.image, rect)
+            # Rotate sprite to face movement direction (assumes artwork points up)
+            direction = getattr(self, 'direction', None)
+            if direction is None:
+                # fallback: infer from last position difference is not stored; use no rotation
+                angle_deg = 0.0
+            else:
+                if np.linalg.norm(direction) > 1e-6:
+                    angle_deg = -np.degrees(np.arctan2(direction[1], direction[0])) - 90
+                else:
+                    angle_deg = 0.0
+            rotated = pygame.transform.rotate(self.image, angle_deg)
+            rect = rotated.get_rect(center=(px, py))
+            screen.blit(rotated, rect)
         else:
             # Draw filled circle for the evader center
             pygame.draw.circle(screen, (255, 215, 0), (px, py), int(self.radius * scale * 0.7))
@@ -176,8 +187,16 @@ class Renderer:
 
             # Agent sprite or circle
             if self.agent_sprite:
-                rect = self.agent_sprite.get_rect(center=(px, py))
-                self.screen.blit(self.agent_sprite, rect)
+                if agents is not None and hasattr(agents[i], 'orientation'):
+                    ori = agents[i].orientation
+                    angle_deg = -np.degrees(np.arctan2(ori[1], ori[0]))
+                    angle_deg -= 90  # artwork points up: apply -90° offset
+                    rotated = pygame.transform.rotate(self.agent_sprite, angle_deg)
+                    rect = rotated.get_rect(center=(px, py))
+                    self.screen.blit(rotated, rect)
+                else:
+                    rect = self.agent_sprite.get_rect(center=(px, py))
+                    self.screen.blit(self.agent_sprite, rect)
             else:
                 color = colors[i % len(colors)]
                 pygame.draw.circle(self.screen, color, (px, py), int(self.agent_radius * self.scale))
@@ -188,6 +207,8 @@ class Renderer:
                 ds = agents[i].ds
                 pygame.draw.circle(self.screen, (255, 0, 0), (px, py), int(dc * self.scale), 1)
                 pygame.draw.circle(self.screen, (0, 0, 255), (px, py), int(ds * self.scale), 1)
+
+                # (Heading line removed as per request)
 
         pygame.display.flip()
 
