@@ -57,65 +57,6 @@ class Obstacle:
 pygame.init()
 pygame.display.set_mode((1, 1))  # Minimal display just to allow convert/convert_alpha
 
-class Evader:
-    def __init__(self, pos=None, scale=50, radius=0.4, de=0.6, image=None):
-        self.pos = list(pos) if pos else [0.0, 0.0]
-        self.scale = scale
-        self.radius = radius  # Visual radius for rendering
-        self.de = de          # Collision radius for capture detection
-        self.image = None
-
-        if image and os.path.exists(image):
-            try:
-                loaded_img = pygame.image.load(image)
-                try:
-                    self.image = loaded_img.convert_alpha()
-                except:
-                    self.image = loaded_img.convert()
-                # Scale image to match evader radius
-                diameter = int(self.radius * 2 * self.scale)
-                self.image = pygame.transform.scale(self.image, (diameter, diameter))
-            except Exception as e:
-                print(f"Error loading evader image '{image}': {e}")
-                self.image = None
-
-    def set_random_position(self, width_m, height_m, obstacles, max_attempts=100):
-        for _ in range(max_attempts):
-            x = random.uniform(self.de, width_m - self.de)  # Use collision radius for positioning
-            y = random.uniform(self.de, height_m - self.de)
-            if all(not obs.collides_with_point((x, y), self.de) for obs in obstacles):
-                self.pos = [x, y]
-                return True
-        self.pos = [width_m/2, height_m/2]
-        return False
-
-    def draw(self, screen, scale):
-        px, py = int(self.pos[0] * scale), int(self.pos[1] * scale)
-        
-        # Draw evader collision radius (de) as a red circle outline
-        pygame.draw.circle(screen, (255, 0, 0), (px, py), int(self.de * scale), 2)
-        
-        # Draw evader visual radius as a yellow circle outline
-        pygame.draw.circle(screen, (255, 255, 0), (px, py), int(self.radius * scale), 1)
-        
-        if self.image:
-            # Rotate sprite to face movement direction (assumes artwork points up)
-            direction = getattr(self, 'direction', None)
-            if direction is None:
-                # fallback: infer from last position difference is not stored; use no rotation
-                angle_deg = 0.0
-            else:
-                if np.linalg.norm(direction) > 1e-6:
-                    angle_deg = -np.degrees(np.arctan2(direction[1], direction[0])) - 90
-                else:
-                    angle_deg = 0.0
-            rotated = pygame.transform.rotate(self.image, angle_deg)
-            rect = rotated.get_rect(center=(px, py))
-            screen.blit(rotated, rect)
-        else:
-            # Draw filled circle for the evader center
-            pygame.draw.circle(screen, (255, 215, 0), (px, py), int(self.radius * scale * 0.7))
-
 class Renderer:
     def __init__(self, width_m, height_m, scale, agent_radius,
                  obstacles=None, agent_image=None, background_image=None):
@@ -176,7 +117,7 @@ class Renderer:
         for obs in self.obstacles:
             obs.draw(self.screen)
 
-        # Draw evader
+        # Draw evader (now using the evader object's own draw method)
         if evader:
             evader.draw(self.screen, self.scale)
 
@@ -207,8 +148,6 @@ class Renderer:
                 ds = agents[i].ds
                 pygame.draw.circle(self.screen, (255, 0, 0), (px, py), int(dc * self.scale), 1)
                 pygame.draw.circle(self.screen, (0, 0, 255), (px, py), int(ds * self.scale), 1)
-
-                # (Heading line removed as per request)
 
         pygame.display.flip()
 
