@@ -1,0 +1,4 @@
+{"model": "models/dqn_model_200.pt", "success_rate": 0.85, "avg_reward": -789.5517590411998, "avg_len": 680.25, "avg_capture_steps": 623.8235294117648}
+{"model": "models/dqn_model_400.pt", "success_rate": 0.95, "avg_reward": -763.1003041105391, "avg_len": 823.5, "avg_capture_steps": 814.2105263157895}
+{"model": "models/dqn_model_600.pt", "success_rate": 0.95, "avg_reward": -584.3266826389214, "avg_len": 784.95, "avg_capture_steps": 773.6315789473684}
+{"model": "models/dqn_final.pt", "success_rate": 1.0, "avg_reward": -649.2162326930951, "avg_len": 755.75, "avg_capture_steps": 755.75}

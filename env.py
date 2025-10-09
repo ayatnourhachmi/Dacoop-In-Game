@@ -10,7 +10,15 @@ class ContinuousWorldParallelEnv(ParallelEnv):
 
     def __init__(self, n_agents=2, max_cycles=1000, world_size=(10, 10),
                  render_mode="human", dc=0.5, ds=2.0, evader_speed=400, scale=100,
-                 pursuer_speed=300):
+                 pursuer_speed=300, show_obstacle_bounds=False, verbose=False,
+                 # --- Reward weights (tunable) ---
+                 r_capture=80.0,           # was +20.0
+                 r_col_obs=-10.0,          # was -20.0
+                 r_col_agent=-10.0,        # was -20.0
+                 r_warn=-1.0,              # was -2.0
+                 r_step_penalty=-0.02,     # new: encourages faster capture
+                 r_approach_gain=1.0,      # scales approach reward
+                 r_move_gain=0.05):        # was 0.1
         super().__init__()
         self.n_agents = n_agents
         self.agents = [f"agent_{i}" for i in range(n_agents)]
@@ -25,22 +33,42 @@ class ContinuousWorldParallelEnv(ParallelEnv):
         self.evader_speed = evader_speed  # mm/s like original
         self.pursuer_speed = pursuer_speed  # mm/s, ensure evader_speed > pursuer_speed
         self.scale = scale
+        self.show_obstacle_bounds = show_obstacle_bounds
+        self.verbose = verbose
+
+        # --- Reward weights ---
+        self.r_capture = r_capture
+        self.r_col_obs = r_col_obs
+        self.r_col_agent = r_col_agent
+        self.r_warn = r_warn
+        self.r_step_penalty = r_step_penalty
+        self.r_approach_gain = r_approach_gain
+        self.r_move_gain = r_move_gain
 
         # Scale world coordinates to match original environment (mm)
         self.world_width_mm = self.world_width * 1000
         self.world_height_mm = self.world_height * 1000
 
-        # Obstacle specifications (scaled to match world)
+        # Obstacle specifications (easily changeable)
+        # Format: (x, y, width_m, height_m, image_path)
         self.obstacle_specs = [
-            (2.0, 2.0, 1.0, 0.5, "sprites/obs1.png"),
-            (5.0, 4.0, 0.7, 0.7, "sprites/obs1.png"),
-            (7.5, 8.0, 1.2, 0.4, "sprites/obs1.png")
+            (2.0, 2.0, 2.0, 1.5, "sprites/obs1_2.png"),
+            (5.0, 4.0, 1.8, 1.8, "sprites/obs3.png"),
+            (7.5, 8.0, 2.0, 1.5, "sprites/obs1_2.png")
         ]
-        self.obstacles_objects = [Obstacle(x, y, w, h, self.scale, image=img)
-                                  for x, y, w, h, img in self.obstacle_specs]
+        
+        # Create obstacles with debug visualization option
+        self.obstacles_objects = []
+        for i, (x, y, w, h, img) in enumerate(self.obstacle_specs):
+            obstacle = Obstacle(x, y, w, h, self.scale, 
+                              color=(100 + i*30, 100 + i*30, 100 + i*30),  # Different colors as fallback
+                              image=img, 
+                              show_bounds=self.show_obstacle_bounds)
+            self.obstacles_objects.append(obstacle)
+            if self.verbose:
+                print(f"Created obstacle {i+1} at ({x}, {y}) with size {w}x{h}m")
 
         # Agents with APF parameters
-        # Convert mm/s to m/s for pursuers constant speed
         pursuer_speed_ms = max(0.01, self.pursuer_speed) / 1000.0
         self.agents_objects = [
             Agent(pos=[1.0 + i * 0.5, 1.0 + i * 0.3],
@@ -52,10 +80,7 @@ class ContinuousWorldParallelEnv(ParallelEnv):
         # Evader with movement capability
         self.evader = Evader(pos=[6.0, 6.0], scale=self.scale, radius=0.4, de=0.4,
                             image="sprites/evader.png")
-        # Evader speed in m/s
         self.evader_speed = max((self.pursuer_speed + 1), evader_speed) / 1000.0
-        
-        # True for Manual control mode for evader
         self.evader_manual = False
 
         if render_mode == "human":
@@ -73,24 +98,21 @@ class ContinuousWorldParallelEnv(ParallelEnv):
 
         import gymnasium.spaces as gym
         
-        # Action space: [eta_scale, individual_balance]
-        # eta_scale: 0.1-10.0 (multiplier for repulsive force)
-        # individual_balance: 0.0-4000.0 (balance between attraction and repulsion)
         self.action_spaces = {
             a: gym.Box(low=np.array([0.1, 0.0]), high=np.array([10.0, 4000.0]),
                        shape=(2,), dtype=np.float32) for a in self.agents
         }
 
-        # Observation space: enhanced with APF-relevant info
         max_neighbor_info = (n_agents - 1) * 4
-        obs_dim = 7 + max_neighbor_info  # pos(2) + evader_pos(2) + nearest_obs(3) + neighbors
+        obs_dim = 7 + max_neighbor_info
         self.observation_spaces = {
             a: gym.Box(-1, max(self.world_width, self.world_height),
                        shape=(obs_dim,), dtype=np.float32) for a in self.agents
         }
 
     def print_detailed_agent_info(self):
-        """Print comprehensive information about each agent"""
+        if not self.verbose:
+            return
         print("\n" + "="*80)
         print(f"STEP {self.steps} - DETAILED AGENT INFORMATION")
         print("="*80)
@@ -98,7 +120,6 @@ class ContinuousWorldParallelEnv(ParallelEnv):
         for i, agent in enumerate(self.agents_objects):
             agent_name = self.agents[i]
             
-            # Basic agent info
             dist_to_evader = np.linalg.norm(agent.pos - self.evader.pos)
             status = "TERMINATED" if agent.reached_evader else "ACTIVE"
             wall_status = "WALL_FOLLOWING" if agent.wall_following else "NORMAL"
@@ -109,7 +130,6 @@ class ContinuousWorldParallelEnv(ParallelEnv):
             print(f"   Distance to Evader: {dist_to_evader:.3f}")
             print(f"   Reached Evader: {'TRUE' if agent.reached_evader else 'FALSE'}")
             
-            # Get neighbors information
             neighbors_info = agent.get_neighbors_info(self.agents_objects, self.evader.pos)
             print(f"   Neighbors within ds={agent.ds:.1f}: {len(neighbors_info)}")
             
@@ -124,7 +144,6 @@ class ContinuousWorldParallelEnv(ParallelEnv):
             else:
                 print("      No neighbors detected")
             
-            # Get nearest obstacle information
             nearest_obstacle = agent.get_nearest_obstacle_info(self.obstacles_objects)
             if nearest_obstacle:
                 print(f"   Nearest Obstacle:")
@@ -133,14 +152,12 @@ class ContinuousWorldParallelEnv(ParallelEnv):
             else:
                 print("   Nearest Obstacle: None detected")
             
-            # Check collision with obstacles
             collision_with_obstacle = any(
                 obs.collides_with_point(agent.pos, agent.dc)
                 for obs in self.obstacles_objects
             )
             print(f"   Near Obstacle (collision): {'TRUE' if collision_with_obstacle else 'FALSE'}")
         
-        # Evader info
         evader_info = self.evader.get_status_info()
         print(f"\nEVADER INFORMATION [{evader_info['status']}]")
         print(f"   Position: ({evader_info['position'][0]:.3f}, {evader_info['position'][1]:.3f})")
@@ -157,7 +174,6 @@ class ContinuousWorldParallelEnv(ParallelEnv):
             
         self.steps = 0
 
-        # Reset agent positions safely
         for i, agent in enumerate(self.agents_objects):
             placed = False
             attempts = 0
@@ -177,36 +193,30 @@ class ContinuousWorldParallelEnv(ParallelEnv):
             if not placed:
                 agent.pos[:] = [1.0 + i * 0.5, 1.0 + i * 0.3]
             
-            # Reset agent state
             agent.reached_evader = False
             agent.last_velocity = np.zeros(2)
             agent.wall_following = False
-            agent.orientation = np.array([0.0, 1.0])  # Reset orientation
+            agent.orientation = np.array([0.0, 1.0])
 
-        # Reset evader position using the new Evader class method
         clearance = max(self.evader.de * 2.0, 0.6)
         self.evader.set_random_position(self.world_width, self.world_height, 
                                        self.obstacles_objects, clearance)
         
-        # Reset evader state
         self.evader.reset_state()
 
         obs = {a: self._get_obs(i) for i, a in enumerate(self.agents)}
         infos = {a: {} for a in self.agents}
         
-        # Print initial state
-        self.print_detailed_agent_info()
+        if self.verbose:
+            self.print_detailed_agent_info()
         
         return obs, infos
 
     def _get_obs(self, agent_idx):
-        """Get enhanced observation for a specific agent"""
         agent = self.agents_objects[agent_idx]
         
-        # Basic info: agent position + evader position
         obs = list(agent.pos) + list(self.evader.pos)
         
-        # Nearest obstacle info (distance, position)
         nearest_obstacle = agent.get_nearest_obstacle_info(self.obstacles_objects)
         if nearest_obstacle:
             obs.extend([
@@ -215,13 +225,11 @@ class ContinuousWorldParallelEnv(ParallelEnv):
                 nearest_obstacle['position'][1]
             ])
         else:
-            obs.extend([-1.0, -1.0, -1.0])  # No obstacle detected
+            obs.extend([-1.0, -1.0, -1.0])
         
-        # Neighbors info
         neighbors_info = agent.get_neighbors_info(self.agents_objects, self.evader.pos)
         max_neighbors = self.n_agents - 1
         
-        # Add neighbor information (pad with -1 if fewer neighbors)
         for i in range(max_neighbors):
             if i < len(neighbors_info):
                 neighbor = neighbors_info[i]
@@ -232,7 +240,7 @@ class ContinuousWorldParallelEnv(ParallelEnv):
                     1.0 if neighbor['is_active'] else 0.0
                 ])
             else:
-                obs.extend([-1.0, -1.0, -1.0, -1.0])  # No neighbor
+                obs.extend([-1.0, -1.0, -1.0, -1.0])
         
         return np.array(obs, dtype=np.float32)
 
@@ -243,7 +251,6 @@ class ContinuousWorldParallelEnv(ParallelEnv):
         truncated = {}
         infos = {}
 
-        # Update agents with their actions
         for i, agent in enumerate(self.agents_objects):
             agent_name = self.agents[i]
             action = actions[agent_name]
@@ -256,7 +263,7 @@ class ContinuousWorldParallelEnv(ParallelEnv):
                     agents=self.agents_objects,
                     evader_pos=self.evader.pos,
                     evader_de=self.evader.de,
-                    action=action,  # Pass the APF parameters
+                    action=action,
                     eta=1.0,
                     rho_0=3.0,
                     lam=1.0,
@@ -265,69 +272,57 @@ class ContinuousWorldParallelEnv(ParallelEnv):
                     wall_repulse_gain=2.0
                 )
 
-        # Calculate rewards and termination conditions
         for i, agent in enumerate(self.agents_objects):
             agent_name = self.agents[i]
             
-            # Calculate distance to evader
             dist_to_evader_center = np.linalg.norm(agent.pos - self.evader.pos)
             dist_to_evader_surface = max(0, dist_to_evader_center - self.evader.de)
             
-            # Reward structure similar to original environment
             reward = 0.0
-            # Persist termination once reached
             done_flag = agent.reached_evader
-            # Ensure variable is always defined for infos below
             collision_with_obstacle = False
-            
+
+            reward += self.r_step_penalty * (self.dt / 0.05)
+
             if not agent.reached_evader:
-                # Main reward - capture bonus
                 if dist_to_evader_surface <= agent.dc:
-                    reward += 20.0  # r_main
+                    reward += self.r_capture
                     done_flag = True
                     agent.reached_evader = True
                 
-                # Collision penalties
-                # Obstacle collision penalty
                 collision_with_obstacle = any(
-                    obs.collides_with_point(agent.pos, 0.1)  # 100mm like original
+                    obs.collides_with_point(agent.pos, 0.1)
                     for obs in self.obstacles_objects
                 )
                 if collision_with_obstacle:
-                    reward -= 20.0  # r_col_1
+                    reward += self.r_col_obs
                 elif any(obs.collides_with_point(agent.pos, 0.15) for obs in self.obstacles_objects):
-                    reward -= 2.0  # Warning zone
+                    reward += self.r_warn
                 
-                # Agent collision penalty
                 min_agent_dist = float('inf')
                 for other in self.agents_objects:
                     if other is not agent:
                         other_dist = np.linalg.norm(agent.pos - other.pos)
                         min_agent_dist = min(min_agent_dist, other_dist)
                 
-                if min_agent_dist < 0.2:  # 200mm like original
-                    reward -= 20.0  # r_col_2
+                if min_agent_dist < 0.2:
+                    reward += self.r_col_agent
                 
-                # Approach reward - distance-based improvement
                 current_dist = dist_to_evader_center
                 if hasattr(agent, 'last_distance_to_evader'):
                     distance_improvement = agent.last_distance_to_evader - current_dist
-                    reward += distance_improvement / 0.2  # r_app, normalized by 200mm
+                    reward += self.r_approach_gain * (distance_improvement / 0.2)
                 agent.last_distance_to_evader = current_dist
                 
-                # Movement reward (encourage active behavior)
-                reward += 0.1 * np.linalg.norm(agent.last_velocity)
+                reward += self.r_move_gain * np.linalg.norm(agent.last_velocity)
             
-            # Termination conditions
             if self.steps >= self.max_cycles:
-                done_flag = True  # Time limit reached
+                done_flag = True
             
-            # Store results
             total_rewards[agent_name] = reward
             terminated[agent_name] = done_flag
             truncated[agent_name] = False
             
-            # Information for debugging
             neighbors_info = agent.get_neighbors_info(self.agents_objects, self.evader.pos)
             nearest_obstacle = agent.get_nearest_obstacle_info(self.obstacles_objects)
             
@@ -348,10 +343,8 @@ class ContinuousWorldParallelEnv(ParallelEnv):
                 "action_used": actions[agent_name].copy()
             }
 
-        # Update evader position only if no agent has captured it
         if not any(agent.reached_evader for agent in self.agents_objects):
             if self.evader_manual:
-                # Manual control mode
                 self.evader.update_manual_control(
                     speed=self.evader_speed,
                     dt=self.dt,
@@ -359,7 +352,6 @@ class ContinuousWorldParallelEnv(ParallelEnv):
                     obstacles=self.obstacles_objects
                 )
             else:
-                # Autonomous mode
                 self.evader.update_autonomous(
                     agents=self.agents_objects,
                     obstacles=self.obstacles_objects,
@@ -368,8 +360,7 @@ class ContinuousWorldParallelEnv(ParallelEnv):
                     dt=self.dt
                 )
 
-        # Print detailed information periodically
-        if self.steps % 30 == 0 or any(agent.reached_evader for agent in self.agents_objects):
+        if self.verbose and (self.steps % 30 == 0 or any(agent.reached_evader for agent in self.agents_objects)):
             self.print_detailed_agent_info()
 
         obs = {a: self._get_obs(i) for i, a in enumerate(self.agents)}
@@ -386,9 +377,8 @@ class ContinuousWorldParallelEnv(ParallelEnv):
             self.renderer.close()
 
 if __name__ == "__main__":
-    # Test with APF actions
     print("=== APF-Based Navigation Test ===")
-    env = ContinuousWorldParallelEnv(n_agents=2, render_mode="human")
+    env = ContinuousWorldParallelEnv(n_agents=2, render_mode="human", show_obstacle_bounds=True)
     num_episodes = 2
 
     for episode in range(num_episodes):
@@ -401,10 +391,8 @@ if __name__ == "__main__":
         print(f"Evader position: {env.evader.pos}")
 
         while not done and step_count < 1000:
-            # Create APF-based actions
             actions = {}
             for agent_name in env.agents:
-                # eta_scale: moderate repulsion, individual_balance: balanced
                 actions[agent_name] = np.array([2.0, 2000.0], dtype=np.float32)
             
             obs, rewards, terminated, truncated, infos = env.step(actions)
