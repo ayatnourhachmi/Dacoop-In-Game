@@ -10,7 +10,7 @@ if [[ -d "venv" ]]; then
   source venv/bin/activate
 fi
 
-# Usage examples:
+# Usage examples
 #   bash eval_models.sh
 #   bash eval_models.sh --episodes 10 --max-cycles 1000
 #   bash eval_models.sh --models models/dqn_model_*.pt models/dqn_final.pt --episodes 5

@@ -1,4 +1,10 @@
-{"model": "models/dqn_model_200.pt", "success_rate": 0.85, "avg_reward": -789.5517590411998, "avg_len": 680.25, "avg_capture_steps": 623.8235294117648}
-{"model": "models/dqn_model_400.pt", "success_rate": 0.95, "avg_reward": -763.1003041105391, "avg_len": 823.5, "avg_capture_steps": 814.2105263157895}
-{"model": "models/dqn_model_600.pt", "success_rate": 0.95, "avg_reward": -584.3266826389214, "avg_len": 784.95, "avg_capture_steps": 773.6315789473684}
-{"model": "models/dqn_final.pt", "success_rate": 1.0, "avg_reward": -649.2162326930951, "avg_len": 755.75, "avg_capture_steps": 755.75}
+{"model": "models/dqn_model_100.pt", "success_rate": 1.0, "avg_reward": -428.96836179569607, "avg_len": 747.95, "avg_capture_steps": 747.95}
+{"model": "models/dqn_model_200.pt", "success_rate": 0.95, "avg_reward": -189.90013112161265, "avg_len": 752.4, "avg_capture_steps": 739.3684210526316}
+{"model": "models/dqn_model_300.pt", "success_rate": 0.9, "avg_reward": -825.95281074508, "avg_len": 813.7, "avg_capture_steps": 793.0}
+{"model": "models/dqn_model_400.pt", "success_rate": 0.95, "avg_reward": -283.46601668830584, "avg_len": 779.6, "avg_capture_steps": 768.0}
+{"model": "models/dqn_model_500.pt", "success_rate": 0.9, "avg_reward": -623.5380509662633, "avg_len": 694.5, "avg_capture_steps": 660.5555555555555}
+{"model": "models/dqn_model_600.pt", "success_rate": 0.95, "avg_reward": -677.7426286190603, "avg_len": 756.95, "avg_capture_steps": 744.1578947368421}
+{"model": "models/dqn_model_700.pt", "success_rate": 0.95, "avg_reward": -357.88534190440885, "avg_len": 780.4, "avg_capture_steps": 768.8421052631579}
+{"model": "models/dqn_model_800.pt", "success_rate": 0.8, "avg_reward": -491.3686646403994, "avg_len": 773.4, "avg_capture_steps": 716.75}
+{"model": "models/dqn_model_900.pt", "success_rate": 0.85, "avg_reward": -662.796667154714, "avg_len": 859.9, "avg_capture_steps": 835.1764705882352}
+{"model": "models/dqn_final.pt", "success_rate": 0.95, "avg_reward": -396.87127751541914, "avg_len": 790.85, "avg_capture_steps": 779.8421052631579}

@@ -2,6 +2,14 @@ import torch
 import numpy as np
 import argparse
 import time
+
+# Optional keyboard support for manual evader control
+try:
+    import pygame
+    _HAS_PYGAME = True
+except Exception:
+    _HAS_PYGAME = False
+
 from env import ContinuousWorldParallelEnv
 from model_def import Net
 
@@ -51,7 +59,8 @@ def evaluate(
     max_cycles: int = 1000,
     sleep: float = 0.0,
     log_interval: int = 250,
-    quiet: bool = False
+    quiet: bool = False,
+    manual_evader: bool = False
 ):
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     env = make_env(render=render, max_cycles=max_cycles)
@@ -70,6 +79,24 @@ def evaluate(
         print(f"Loaded model: {model_path}")
         print(f"Device: {device}, Episodes: {episodes}, Max cycles: {env.max_cycles}")
 
+    # Minimal setup for manual evader control (uses env.update_evader if available)
+    if manual_evader and _HAS_PYGAME:
+        try:
+            if not pygame.get_init():
+                pygame.init()
+            # If not rendering, create a small window to capture keyboard focus
+            if not render and not pygame.display.get_init():
+                pygame.display.set_caption("Evader Controls (WASD/Arrows)")
+                pygame.display.set_mode((320, 120))
+        except Exception:
+            pass
+        # If env exposes a toggle, enable it
+        if hasattr(env, "evader_manual"):
+            try:
+                env.evader_manual = True
+            except Exception:
+                pass
+
     rewards_per_episode = []
     lengths = []
     success_flags = []
@@ -86,6 +113,13 @@ def evaluate(
             print(f"\nEpisode {ep+1}")
 
         while step < env.max_cycles:
+            # Pump keyboard events so env.update_evader() can read current keys
+            if manual_evader and _HAS_PYGAME:
+                try:
+                    pygame.event.pump()
+                except Exception:
+                    pass
+
             agents_done_mask = [ag.reached_evader for ag in env.agents_objects]
             actions_indexed = select_actions(net, device, states, agents_done_mask)
 
@@ -154,6 +188,7 @@ def parse_args():
     ap.add_argument("--sleep", type=float, default=0.0)
     ap.add_argument("--log-interval", type=int, default=250)
     ap.add_argument("--quiet", action="store_true")
+    ap.add_argument("--manual-evader", action="store_true", help="Enable keyboard control of the evader (WASD/Arrows)")
     return ap.parse_args()
 
 if __name__ == "__main__":
@@ -165,5 +200,6 @@ if __name__ == "__main__":
         max_cycles=args.max_cycles,
         sleep=args.sleep,
         log_interval=args.log_interval,
-        quiet=args.quiet
+        quiet=args.quiet,
+        manual_evader=args.manual_evader
     )
