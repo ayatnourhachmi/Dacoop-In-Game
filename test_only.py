@@ -181,7 +181,7 @@ def evaluate(
 
 def parse_args():
     ap = argparse.ArgumentParser()
-    ap.add_argument("model", nargs="?", default="models/dqn_final.pt")
+    ap.add_argument("model", nargs="?", default="models1/dqn_model_700.pt")
     ap.add_argument("--episodes", "-e", type=int, default=5)
     ap.add_argument("--render", action="store_true")
     ap.add_argument("--max-cycles", type=int, default=1000)

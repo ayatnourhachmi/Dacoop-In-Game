@@ -138,7 +138,9 @@ class Renderer:
         self.height_m = height_m
         self.scale = scale
         self.window_size = (int(width_m*scale), int(height_m*scale))
-        self.screen = pygame.display.set_mode(self.window_size)
+        # Center the window on screen
+        os.environ['SDL_VIDEO_CENTERED'] = '1'
+        self.screen = pygame.display.set_mode(self.window_size, pygame.NOFRAME)
         pygame.display.set_caption("Continuous World Env - Evader Chase")
         self.clock = pygame.time.Clock()
 
